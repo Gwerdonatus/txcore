@@ -1,5 +1,4 @@
 import json
-import uuid
 import pytest
 from rest_framework.test import APIClient
 from unittest.mock import patch

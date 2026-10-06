@@ -1,5 +1,4 @@
 import uuid
-import io
 import pytest
 from rest_framework.test import APIClient
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -27,7 +26,10 @@ def make_transaction(reference, amount="100.00", currency="USD", status="settled
 def make_csv(rows: list[dict]) -> str:
     lines = ["reference,amount,currency,status"]
     for r in rows:
-        lines.append(f"{r['reference']},{r['amount']},{r.get('currency','USD')},{r.get('status','settled')}")
+        lines.append(
+            f"{r['reference']},{r['amount']},"
+            f"{r.get('currency', 'USD')},{r.get('status', 'settled')}"
+        )
     return "\n".join(lines)
 
 

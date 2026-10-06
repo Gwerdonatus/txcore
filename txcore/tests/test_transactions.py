@@ -1,11 +1,9 @@
 import uuid
 import pytest
-from django.urls import reverse
 from rest_framework.test import APIClient
 from unittest.mock import patch
 
 from txcore.apps.transactions.models import Transaction
-from txcore.core.idempotency import delete_cached_response
 
 
 @pytest.fixture

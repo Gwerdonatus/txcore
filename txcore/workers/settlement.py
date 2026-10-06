@@ -42,7 +42,11 @@ def process_settlement(self, transaction_id: str):
         transaction.save(update_fields=["status", "updated_at"])
 
         # Simulate provider settlement call (replace with real provider SDK)
-        logger.info("Settling transaction %s with provider: %s", transaction.reference, transaction.provider or "default")
+        logger.info(
+            "Settling transaction %s with provider: %s",
+            transaction.reference,
+            transaction.provider or "default",
+        )
 
         # Mark as settled
         transaction.status = Transaction.Status.SETTLED
