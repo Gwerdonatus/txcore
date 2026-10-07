@@ -8,7 +8,9 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # OCI image repository names must be lowercase. GitHub preserves the
+  # account's display casing in github.repository, so keep this canonical.
+  IMAGE_NAME: gwerdonatus/txcore
 
 jobs:
   test:
