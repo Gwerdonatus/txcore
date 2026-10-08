@@ -2,7 +2,7 @@
 # TxCore API smoke tests
 # Run after docker-compose up: bash scripts/test_api.sh
 
-BASE_URL="http://localhost:8000"
+BASE_URL="${BASE_URL:-http://localhost:8100}"
 WEBHOOK_SECRET="local-webhook-secret"
 
 echo ""

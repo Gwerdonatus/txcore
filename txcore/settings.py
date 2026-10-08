@@ -87,6 +87,7 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_MAX_RETRIES = 5
+CELERY_IMPORTS = ("txcore.workers.settlement", "txcore.workers.alerts")
 
 # Kafka
 KAFKA_BOOTSTRAP_SERVERS = config("KAFKA_BOOTSTRAP_SERVERS", default="localhost:9092")
@@ -121,7 +122,8 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "TxCore API",
-    "DESCRIPTION": "High-throughput distributed payment processing system",
+    "COMPONENT_SPLIT_REQUEST": True,
+    "DESCRIPTION": "Payment-processing prototype: retry-safe intake, signed webhooks and CSV reconciliation",
     "VERSION": "1.0.0",
 }
 

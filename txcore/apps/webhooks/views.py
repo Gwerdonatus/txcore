@@ -3,8 +3,9 @@ import logging
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, OpenApiParameter
 
+from txcore.core.schema import WebhookPayload, WebhookAccepted, WebhookListResponse
 from txcore.core.metrics import WEBHOOKS_RECEIVED, WEBHOOK_VALIDATION_FAILURES
 from txcore.events.kafka_producer import publish
 from .models import WebhookEvent
@@ -20,7 +21,12 @@ class WebhookIngestView(APIView):
     """
 
     @extend_schema(
-        responses={202: {"description": "Webhook accepted for processing"}},
+        request=WebhookPayload,
+        responses={202: WebhookAccepted},
+        parameters=[OpenApiParameter(
+            name="X-Webhook-Signature", location=OpenApiParameter.HEADER,
+            required=True, description="Generic HMAC-SHA256 hex digest of the exact request bytes",
+        )],
     )
     def post(self, request, provider):
         raw_body = request.body
@@ -82,6 +88,7 @@ class WebhookIngestView(APIView):
 class WebhookEventListView(APIView):
     """GET /api/v1/webhooks/?provider=stripe&status=received"""
 
+    @extend_schema(responses={200: WebhookListResponse})
     def get(self, request):
         queryset = WebhookEvent.objects.all()
 

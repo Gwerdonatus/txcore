@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 def validate_signature(payload_bytes: bytes, signature: str, provider: str = "default") -> bool:
     """
     Validate HMAC-SHA256 webhook signature.
-    Supports Stripe-style 'sha256=<hex>' or raw hex signatures.
+    Supports a generic 'sha256=<hex>' prefix or raw hex signatures.
+    This is not a provider-specific timestamped signing protocol.
     """
     secret = settings.WEBHOOK_SECRET.encode("utf-8")
     expected = hmac.new(secret, payload_bytes, hashlib.sha256).hexdigest()

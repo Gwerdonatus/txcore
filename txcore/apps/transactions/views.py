@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 
 from txcore.core.idempotency import get_cached_response, cache_response
+from txcore.core.schema import TransactionListResponse
 from txcore.core.metrics import TRANSACTIONS_CREATED, TRANSACTION_AMOUNT
 from txcore.events.kafka_producer import publish
 from .models import Transaction
@@ -57,16 +58,20 @@ class TransactionCreateView(APIView):
         data = serializer.validated_data
         reference = f"TXN-{uuid.uuid4().hex[:12].upper()}"
 
-        transaction = Transaction.objects.create(
+        transaction, created = Transaction.objects.get_or_create(
             idempotency_key=idempotency_key,
-            reference=reference,
-            amount=data["amount"],
-            currency=data.get("currency", Transaction.Currency.USD),
-            description=data.get("description", ""),
-            metadata=data.get("metadata", {}),
-            provider=data.get("provider", ""),
-            status=Transaction.Status.PENDING,
+            defaults={
+                "reference": reference,
+                "amount": data["amount"],
+                "currency": data.get("currency", Transaction.Currency.USD),
+                "description": data.get("description", ""),
+                "metadata": data.get("metadata", {}),
+                "provider": data.get("provider", ""),
+                "status": Transaction.Status.PENDING,
+            },
         )
+        if not created:
+            return Response(TransactionResponseSerializer(transaction).data, status=status.HTTP_200_OK)
 
         # Prometheus metrics
         TRANSACTIONS_CREATED.labels(
@@ -123,7 +128,7 @@ class TransactionDetailView(APIView):
 class TransactionListView(APIView):
     """GET /api/v1/transactions/?status=pending&currency=USD"""
 
-    @extend_schema(responses={200: TransactionResponseSerializer(many=True)})
+    @extend_schema(responses={200: TransactionListResponse})
     def get(self, request):
         queryset = Transaction.objects.all().select_related()
 

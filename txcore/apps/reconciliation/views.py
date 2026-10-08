@@ -3,6 +3,10 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser
+from drf_spectacular.utils import extend_schema
+from txcore.core.schema import (
+    ReconciliationUpload, ReconciliationSummary, ReconciliationDetail, ReconciliationListResponse,
+)
 
 from .models import ReconciliationRun, ReconciliationDiscrepancy
 from .engine import run_reconciliation
@@ -17,6 +21,7 @@ class ReconciliationUploadView(APIView):
     """
     parser_classes = [MultiPartParser]
 
+    @extend_schema(request=ReconciliationUpload, responses={201: ReconciliationSummary})
     def post(self, request):
         csv_file = request.FILES.get("file")
         if not csv_file:
@@ -60,6 +65,7 @@ class ReconciliationUploadView(APIView):
 class ReconciliationRunDetailView(APIView):
     """GET /api/v1/reconciliation/<run_id>/"""
 
+    @extend_schema(responses={200: ReconciliationDetail})
     def get(self, request, run_id):
         try:
             run = ReconciliationRun.objects.get(id=run_id)
@@ -98,6 +104,7 @@ class ReconciliationRunDetailView(APIView):
 class ReconciliationRunListView(APIView):
     """GET /api/v1/reconciliation/"""
 
+    @extend_schema(responses={200: ReconciliationListResponse})
     def get(self, request):
         runs = ReconciliationRun.objects.all()[:20]
         data = [
