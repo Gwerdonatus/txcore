@@ -2,13 +2,18 @@ import uuid
 import pytest
 from rest_framework.test import APIClient
 from unittest.mock import patch
+from django.core.cache import cache
 
 from txcore.apps.transactions.models import Transaction
 
 
 @pytest.fixture
-def client():
-    return APIClient()
+def client(db):
+    from django.contrib.auth import get_user_model
+    user = get_user_model().objects.create_user(username="operator", password="test-password", is_staff=True)
+    client = APIClient()
+    client.force_authenticate(user=user)
+    return client
 
 
 @pytest.fixture
@@ -29,7 +34,7 @@ def valid_payload():
 @pytest.mark.django_db
 class TestTransactionCreate:
     def test_creates_transaction_successfully(self, client, idempotency_key, valid_payload):
-        with patch("txcore.apps.transactions.views.publish", return_value=True):
+        with patch("txcore.apps.transactions.views.enqueue", return_value=True):
             response = client.post(
                 "/api/v1/transactions/create/",
                 data=valid_payload,
@@ -45,7 +50,7 @@ class TestTransactionCreate:
         assert data["reference"].startswith("TXN-")
 
     def test_idempotency_returns_same_response(self, client, idempotency_key, valid_payload):
-        with patch("txcore.apps.transactions.views.publish", return_value=True):
+        with patch("txcore.apps.transactions.views.enqueue", return_value=True):
             r1 = client.post(
                 "/api/v1/transactions/create/",
                 data=valid_payload,
@@ -63,7 +68,26 @@ class TestTransactionCreate:
         assert r2.status_code == 200
         assert r1.json()["reference"] == r2.json()["reference"]
         # Only one DB record should exist
-        assert Transaction.objects.filter(idempotency_key=idempotency_key).count() == 1
+        assert Transaction.objects.count() == 1
+
+    def test_retry_after_cache_eviction_returns_existing_transaction(
+        self, client, idempotency_key, valid_payload,
+    ):
+        with patch("txcore.apps.transactions.views.enqueue", return_value=True) as publish:
+            first = client.post(
+                "/api/v1/transactions/create/", data=valid_payload, format="json",
+                HTTP_IDEMPOTENCY_KEY=idempotency_key,
+            )
+            cache.clear()
+            retry = client.post(
+                "/api/v1/transactions/create/", data=valid_payload, format="json",
+                HTTP_IDEMPOTENCY_KEY=idempotency_key,
+            )
+        assert first.status_code == 201
+        assert retry.status_code == 200
+        assert retry.json()["id"] == first.json()["id"]
+        assert Transaction.objects.count() == 1
+        assert publish.call_count == 1
 
     def test_missing_idempotency_key_returns_400(self, client, valid_payload):
         response = client.post(

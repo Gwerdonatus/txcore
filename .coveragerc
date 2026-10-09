@@ -1,0 +1,6 @@
+[run]
+omit =
+    txcore/tests/*
+    txcore/apps/*/migrations/*
+    txcore/test_settings.py
+    txcore/postgres_test_settings.py

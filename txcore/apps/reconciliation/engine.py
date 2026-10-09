@@ -3,6 +3,8 @@ import io
 import logging
 from decimal import Decimal, InvalidOperation
 from django.utils import timezone
+from django.conf import settings
+from django.db import transaction as db_transaction
 
 from txcore.core.metrics import RECONCILIATION_RUNS, RECONCILIATION_DISCREPANCIES
 from txcore.apps.transactions.models import Transaction
@@ -30,40 +32,69 @@ def run_reconciliation(run: ReconciliationRun, csv_content: str) -> Reconciliati
     skipped = 0
 
     try:
-        reader = csv.DictReader(io.StringIO(csv_content))
+        reader = csv.DictReader(io.StringIO(csv_content), strict=True)
 
         # Validate headers
         if not REQUIRED_COLUMNS.issubset(set(reader.fieldnames or [])):
             missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])
             raise ValueError(f"CSV missing required columns: {missing}")
 
-        rows = list(reader)
+        rows = []
+        for row in reader:
+            if len(rows) >= settings.MAX_RECONCILIATION_ROWS:
+                raise ValueError("CSV exceeds the configured row limit.")
+            rows.append(row)
         run.total_rows = len(rows)
         run.save(update_fields=["total_rows"])
 
         # Bulk fetch matching transactions to avoid N+1
-        references = [row.get("reference", "").strip() for row in rows]
-        tx_map = {
-            tx.reference: tx
-            for tx in Transaction.objects.filter(reference__in=references)
-        }
+        references = [(row.get("reference") or "").strip() for row in rows]
+        tx_map = {tx.reference: tx for tx in Transaction.objects.filter(reference__in=references)}
 
         discrepancy_objects = []
 
+        seen = set()
         for row in rows:
-            reference = row.get("reference", "").strip()
+            reference = (row.get("reference") or "").strip()
             if not reference:
                 skipped += 1
                 continue
 
             try:
-                csv_amount = Decimal(row.get("amount", "0").strip())
+                csv_amount = Decimal((row.get("amount") or "").strip())
+                if (
+                    not csv_amount.is_finite()
+                    or csv_amount < 0
+                    or csv_amount >= Decimal("1e15")
+                    or csv_amount.as_tuple().exponent < -4
+                ):
+                    raise InvalidOperation
             except InvalidOperation:
                 skipped += 1
-                logger.warning("Invalid amount in CSV row: %s", row)
+                logger.warning("Skipped statement row with an invalid amount")
                 continue
 
-            csv_status = row.get("status", "").strip().lower()
+            csv_status = (row.get("status") or "").strip().lower()
+            csv_currency = (row.get("currency") or "").strip().upper()
+            if (
+                csv_currency not in Transaction.Currency.values
+                or len(reference) > 100
+                or (csv_status and csv_status not in Transaction.Status.values)
+            ):
+                skipped += 1
+                continue
+            if reference in seen:
+                discrepancy_objects.append(
+                    ReconciliationDiscrepancy(
+                        run=run,
+                        reference=reference,
+                        discrepancy_type=ReconciliationDiscrepancy.Type.DUPLICATE,
+                        notes="Repeated reference in the same statement.",
+                    )
+                )
+                discrepancies += 1
+                continue
+            seen.add(reference)
             transaction = tx_map.get(reference)
 
             if transaction is None:
@@ -79,7 +110,21 @@ def run_reconciliation(run: ReconciliationRun, csv_content: str) -> Reconciliati
                 discrepancies += 1
                 continue
 
-            # Check amount match (within 0.01 tolerance for floating point)
+            if csv_currency != transaction.currency:
+                discrepancy_objects.append(
+                    ReconciliationDiscrepancy(
+                        run=run,
+                        reference=reference,
+                        discrepancy_type=ReconciliationDiscrepancy.Type.CURRENCY_MISMATCH,
+                        expected_currency=csv_currency,
+                        actual_currency=transaction.currency,
+                        notes=f"CSV currency {csv_currency} != DB currency {transaction.currency}",
+                    )
+                )
+                discrepancies += 1
+                continue
+
+            # Check amount match (within the documented 0.01 business tolerance)
             if abs(transaction.amount - csv_amount) > Decimal("0.01"):
                 discrepancy_objects.append(
                     ReconciliationDiscrepancy(
@@ -113,22 +158,24 @@ def run_reconciliation(run: ReconciliationRun, csv_content: str) -> Reconciliati
             matched += 1
 
         # Bulk insert discrepancies
-        if discrepancy_objects:
-            ReconciliationDiscrepancy.objects.bulk_create(discrepancy_objects)
 
         run.matched = matched
         run.discrepancies = discrepancies
         run.skipped = skipped
         run.status = ReconciliationRun.Status.COMPLETED
         run.completed_at = timezone.now()
-        run.save(update_fields=["matched", "discrepancies", "skipped", "status", "completed_at"])
+        with db_transaction.atomic():
+            ReconciliationDiscrepancy.objects.bulk_create(discrepancy_objects)
+            run.save(update_fields=["matched", "discrepancies", "skipped", "status", "completed_at"])
 
         RECONCILIATION_RUNS.labels(status="completed").inc()
         RECONCILIATION_DISCREPANCIES.set(discrepancies)
 
         logger.info(
             "Reconciliation complete: matched=%d discrepancies=%d skipped=%d",
-            matched, discrepancies, skipped,
+            matched,
+            discrepancies,
+            skipped,
         )
 
     except Exception as exc:

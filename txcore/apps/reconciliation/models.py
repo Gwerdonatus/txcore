@@ -32,6 +32,7 @@ class ReconciliationDiscrepancy(models.Model):
         AMOUNT_MISMATCH = "amount_mismatch", "Amount Mismatch"
         NOT_FOUND = "not_found", "Transaction Not Found"
         STATUS_MISMATCH = "status_mismatch", "Status Mismatch"
+        CURRENCY_MISMATCH = "currency_mismatch", "Currency Mismatch"
         DUPLICATE = "duplicate", "Duplicate Entry"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -40,6 +41,8 @@ class ReconciliationDiscrepancy(models.Model):
     discrepancy_type = models.CharField(max_length=30, choices=Type.choices)
     expected_amount = models.DecimalField(max_digits=19, decimal_places=4, null=True)
     actual_amount = models.DecimalField(max_digits=19, decimal_places=4, null=True)
+    expected_currency = models.CharField(max_length=3, blank=True)
+    actual_currency = models.CharField(max_length=3, blank=True)
     expected_status = models.CharField(max_length=20, blank=True)
     actual_status = models.CharField(max_length=20, blank=True)
     notes = models.TextField(blank=True)

@@ -9,8 +9,12 @@ from txcore.apps.reconciliation.engine import run_reconciliation
 
 
 @pytest.fixture
-def client():
-    return APIClient()
+def client(db):
+    from django.contrib.auth import get_user_model
+    user = get_user_model().objects.create_user(username="operator", password="test-password", is_staff=True)
+    client = APIClient()
+    client.force_authenticate(user=user)
+    return client
 
 
 def make_transaction(reference, amount="100.00", currency="USD", status="settled"):

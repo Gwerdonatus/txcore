@@ -66,8 +66,14 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
         run: |
+          docker compose -p txcore config --quiet
+          python -c "from kafka import KafkaProducer"
+          python manage.py check
           python manage.py migrate
+          python manage.py makemigrations --check --dry-run
+          python manage.py spectacular --validate --fail-on-warn --file /tmp/txcore-schema.yml
           pytest --cov=txcore --cov-report=xml --cov-fail-under=80
+          DJANGO_SETTINGS_MODULE=txcore.postgres_test_settings pytest --no-cov
 
       - name: Upload coverage report
         uses: codecov/codecov-action@v4

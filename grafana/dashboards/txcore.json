@@ -1,0 +1,139 @@
+{
+  "uid": "txcore-sandbox",
+  "title": "TxCore \u00b7 Sandbox payment operations",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Stored transactions",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "txcore-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(txcore_transaction_state)",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Settled records",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "txcore-prometheus"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "txcore_transaction_state{status=\"settled\"}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Events awaiting delivery",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "txcore-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "txcore_outbox_pending",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Webhook failures requiring review",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "txcore-prometheus"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "txcore_webhook_state{status=\"failed\"}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Transaction states (database source)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "txcore-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "txcore_transaction_state",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    }
+  ]
+}

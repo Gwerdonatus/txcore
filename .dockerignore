@@ -1,0 +1,9 @@
+.git
+.env
+.venv
+__pycache__
+.pytest_cache
+.coverage
+coverage.xml
+staticfiles
+docs/screenshots

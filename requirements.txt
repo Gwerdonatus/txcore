@@ -3,7 +3,7 @@ djangorestframework==3.15.1
 psycopg2-binary==2.9.9
 redis==5.0.4
 celery==5.3.6
-kafka-python==2.0.2
+kafka-python==2.0.6
 django-prometheus==2.3.1
 prometheus-client==0.20.0
 python-decouple==3.8
@@ -16,3 +16,4 @@ Faker==25.0.0
 locust==2.28.0
 whitenoise==6.6.0
 drf-spectacular==0.27.2
+stripe==16.0.0

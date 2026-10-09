@@ -19,7 +19,7 @@ def _get_producer():
             max_block_ms=5000,
         )
     except Exception as exc:
-        logger.warning("Kafka producer unavailable: %s — events will be skipped", exc)
+        logger.warning("Kafka producer unavailable: %s — publication will be retried by the outbox", exc)
         return None
 
 
@@ -41,7 +41,7 @@ def publish(topic_key: str, key: str, payload: dict) -> bool:
     """
     producer = _producer_instance()
     if producer is None:
-        logger.warning("Skipping Kafka publish — producer not available")
+        logger.warning("Kafka producer unavailable; outbox retains the event")
         return False
 
     topic = settings.KAFKA_TOPICS.get(topic_key)
