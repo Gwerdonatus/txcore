@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from txcore.core.metrics import CELERY_TASKS_PROCESSED, CELERY_TASK_DURATION
 from txcore.apps.transactions.models import Transaction
-from txcore.events.kafka_producer import publish
+from txcore.events.outbox import enqueue
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +33,11 @@ def check_sla_breaches():
     for transaction in breaching:
         age_minutes = int((timezone.now() - transaction.created_at).total_seconds() / 60)
 
-        publish(
+        enqueue(
             "alerts",
-            key=str(transaction.id),
-            payload={
-                "event": "sla_breach",
+            transaction.id,
+            "sla_breach",
+            {
                 "transaction_id": str(transaction.id),
                 "reference": transaction.reference,
                 "status": transaction.status,
@@ -49,7 +49,9 @@ def check_sla_breaches():
 
         logger.warning(
             "SLA breach: %s has been %s for %d minutes",
-            transaction.reference, transaction.status, age_minutes,
+            transaction.reference,
+            transaction.status,
+            age_minutes,
         )
         count += 1
 

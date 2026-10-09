@@ -1,4 +1,5 @@
 """Regression checks for producer acknowledgement and simulated worker behavior."""
+
 import json
 import uuid
 from datetime import timedelta
@@ -8,7 +9,7 @@ from unittest.mock import Mock, patch
 import pytest
 from django.utils import timezone
 
-from txcore.apps.transactions.models import Transaction
+from txcore.apps.transactions.models import Transaction, OutboxEvent
 from txcore.events import kafka_producer
 from txcore.workers.alerts import check_sla_breaches
 from txcore.workers.settlement import process_settlement
@@ -67,38 +68,44 @@ def test_producer_instance_is_reused():
 
 def make_transaction(status="pending"):
     return Transaction.objects.create(
-        reference=f"TXN-{uuid.uuid4().hex}", idempotency_key=uuid.uuid4().hex,
-        amount="42.00", currency="EUR", provider="demo", status=status,
+        reference=f"TXN-{uuid.uuid4().hex}",
+        idempotency_key=uuid.uuid4().hex,
+        amount="42.00",
+        currency="EUR",
+        provider="demo",
+        status=status,
     )
 
 
 def test_settlement_persists_completion_and_skips_repeat():
     transaction = make_transaction()
-    with patch("txcore.workers.settlement.publish", return_value=True) as publish:
-        process_settlement.run(str(transaction.id))
-        process_settlement.run(str(transaction.id))
+    process_settlement.run(str(transaction.id))
+    process_settlement.run(str(transaction.id))
     transaction.refresh_from_db()
     assert transaction.status == Transaction.Status.SETTLED
     assert transaction.settled_at is not None
-    publish.assert_called_once()
-    assert publish.call_args.kwargs["payload"]["reference"] == transaction.reference
+    assert OutboxEvent.objects.count() == 1
+    assert OutboxEvent.objects.get().payload["reference"] == transaction.reference
 
 
 def test_missing_settlement_transaction_does_not_publish():
-    with patch("txcore.workers.settlement.publish") as publish:
-        process_settlement.run(str(uuid.uuid4()))
-    publish.assert_not_called()
+    process_settlement.run(str(uuid.uuid4()))
+    assert not OutboxEvent.objects.exists()
 
 
 def test_settlement_exception_requests_retry():
     transaction = make_transaction()
     retry_error = RuntimeError("retry requested")
-    with patch("txcore.workers.settlement.publish", side_effect=ConnectionError("publication failed")), \
-            patch.object(process_settlement, "retry", side_effect=retry_error) as retry:
+    with (
+        patch("txcore.workers.settlement.enqueue", side_effect=ConnectionError("outbox failed")),
+        patch.object(process_settlement, "retry", side_effect=retry_error) as retry,
+    ):
         with pytest.raises(RuntimeError, match="retry requested"):
             process_settlement.run(str(transaction.id))
     retry.assert_called_once()
     assert retry.call_args.kwargs["countdown"] == 60
+    transaction.refresh_from_db()
+    assert transaction.status == "pending"  # atomic rollback preserves retryability
 
 
 def test_sla_checks_only_old_unsettled_transactions():
@@ -108,16 +115,16 @@ def test_sla_checks_only_old_unsettled_transactions():
     Transaction.objects.filter(id__in=[old.id, settled.id]).update(
         created_at=timezone.now() - timedelta(minutes=45),
     )
-    with patch("txcore.workers.alerts.publish", return_value=True) as publish:
+    with patch("txcore.workers.alerts.enqueue", return_value=True) as publish:
         assert check_sla_breaches.run() == {"breaching_count": 1}
     publish.assert_called_once()
-    payload = publish.call_args.kwargs["payload"]
+    payload = publish.call_args.args[3]
     assert payload["reference"] == old.reference
     assert payload["age_minutes"] >= 45
 
 
 def test_sla_check_without_breach_does_not_publish():
     make_transaction()
-    with patch("txcore.workers.alerts.publish") as publish:
+    with patch("txcore.workers.alerts.enqueue") as publish:
         assert check_sla_breaches.run() == {"breaching_count": 0}
     publish.assert_not_called()

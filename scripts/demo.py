@@ -4,14 +4,20 @@ import hashlib
 import hmac
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 
+AUTH_TOKEN = ""
+
 def request(base, path, payload=None, headers=None, expected=(200,)):
     data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(base + path, data=data, headers=headers or {})
+    request_headers = dict(headers or {})
+    if AUTH_TOKEN:
+        request_headers["Authorization"] = "Token " + AUTH_TOKEN
+    req = urllib.request.Request(base + path, data=data, headers=request_headers)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
@@ -32,6 +38,11 @@ def main():
     base = args.base_url.rstrip("/")
     if urllib.parse.urlparse(base).hostname not in {"localhost", "127.0.0.1"}:
         parser.error("This synthetic demonstration is restricted to localhost.")
+    global AUTH_TOKEN
+    _, account = request(base, "/api/token/", {
+        "username": "demo.admin", "password": os.environ.get("TXCORE_DEMO_PASSWORD", "TxCoreSandbox123!"),
+    })
+    AUTH_TOKEN = account["token"]
     transactions = []
     creation_statuses = []
     for index, amount in enumerate(("250.00", "120.00", "80.00"), 1):
@@ -40,7 +51,7 @@ def main():
             "description": f"Synthetic demo order {index}; no funds moved",
             "metadata": {"demo_data": True, "external_actions_performed": False},
         }
-        headers = {"Idempotency-Key": f"txcore-recruiter-demo-v1-{index}"}
+        headers = {"Idempotency-Key": f"txcore-recruiter-demo-v2-{index}"}
         status, transaction = request(base, "/api/v1/transactions/create/", payload, headers, (200, 201))
         replay_status, replay = request(base, "/api/v1/transactions/create/", payload, headers)
         assert replay["id"] == transaction["id"]
@@ -57,7 +68,7 @@ def main():
     invalid_status, rejected = request(base, "/api/v1/webhooks/ingest/demo/", payload,
                                       {"X-Webhook-Signature": "invalid"}, (401,))
 
-    # Same currency throughout: the current engine does not compare currency.
+    # Local simulation stays pending; it does not simulate a Stripe provider payment.
     csv = "reference,amount,currency,status\n" + "\n".join([
         f"{transactions[0]['reference']},250.00,USD,pending",  # match
         f"{transactions[1]['reference']},119.00,USD,pending",  # amount mismatch
@@ -69,7 +80,8 @@ def main():
             "filename=\"synthetic_demo_statement.csv\"\r\nContent-Type: text/csv\r\n\r\n"
             f"{csv}\r\n--{boundary}--\r\n").encode()
     req = urllib.request.Request(base + "/api/v1/reconciliation/upload/", data=body,
-                                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+                                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
+                                          "Authorization": "Token " + AUTH_TOKEN})
     with urllib.request.urlopen(req, timeout=30) as response:
         assert response.status == 201
         run = json.loads(response.read())
@@ -78,6 +90,14 @@ def main():
     assert {d["type"] for d in detail["discrepancy_detail"]} == {
         "amount_mismatch", "status_mismatch", "not_found",
     }
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        _, webhooks = request(base, "/api/v1/webhooks/?provider=demo")
+        if any(e["id"] == accepted["event_id"] and e["status"] == "processed" for e in webhooks["results"]):
+            break
+        time.sleep(1)
+    else:
+        raise RuntimeError("Beat/worker did not process the accepted webhook.")
     print(json.dumps({"synthetic": True, "external_actions_performed": False,
                       "transaction_reference": reference, "transaction_retries": creation_statuses,
                       "valid_webhook_http": valid_status, "invalid_webhook_http": invalid_status,

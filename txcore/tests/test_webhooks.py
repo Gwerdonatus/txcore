@@ -7,9 +7,18 @@ from txcore.apps.webhooks.models import WebhookEvent
 from txcore.apps.webhooks.signature import compute_signature, validate_signature
 
 
+@pytest.fixture(autouse=True)
+def enable_local_demo(settings):
+    settings.DEBUG = True
+
+
 @pytest.fixture
-def client():
-    return APIClient()
+def client(db):
+    from django.contrib.auth import get_user_model
+    user = get_user_model().objects.create_user(username="operator", password="test-password", is_staff=True)
+    client = APIClient()
+    client.force_authenticate(user=user)
+    return client
 
 
 @pytest.fixture
@@ -27,9 +36,9 @@ class TestWebhookIngest:
         body = json.dumps(webhook_payload).encode()
         signature = compute_signature(body)
 
-        with patch("txcore.apps.webhooks.views.publish", return_value=True):
+        with patch("txcore.apps.webhooks.views.enqueue", return_value=True):
             response = client.post(
-                "/api/v1/webhooks/ingest/stripe/",
+                "/api/v1/webhooks/ingest/demo/",
                 data=body,
                 content_type="application/json",
                 HTTP_X_WEBHOOK_SIGNATURE=signature,
@@ -43,7 +52,7 @@ class TestWebhookIngest:
     def test_invalid_signature_rejected(self, client, webhook_payload):
         body = json.dumps(webhook_payload).encode()
         response = client.post(
-            "/api/v1/webhooks/ingest/stripe/",
+            "/api/v1/webhooks/ingest/demo/",
             data=body,
             content_type="application/json",
             HTTP_X_WEBHOOK_SIGNATURE="invalid-signature",
@@ -53,7 +62,7 @@ class TestWebhookIngest:
     def test_missing_signature_rejected(self, client, webhook_payload):
         body = json.dumps(webhook_payload).encode()
         response = client.post(
-            "/api/v1/webhooks/ingest/stripe/",
+            "/api/v1/webhooks/ingest/demo/",
             data=body,
             content_type="application/json",
         )
@@ -63,7 +72,7 @@ class TestWebhookIngest:
         body = b"not-valid-json{"
         signature = compute_signature(body)
         response = client.post(
-            "/api/v1/webhooks/ingest/stripe/",
+            "/api/v1/webhooks/ingest/demo/",
             data=body,
             content_type="application/json",
             HTTP_X_WEBHOOK_SIGNATURE=signature,
@@ -74,15 +83,15 @@ class TestWebhookIngest:
         body = json.dumps(webhook_payload).encode()
         signature = compute_signature(body)
 
-        with patch("txcore.apps.webhooks.views.publish", return_value=True):
+        with patch("txcore.apps.webhooks.views.enqueue", return_value=True):
             client.post(
-                "/api/v1/webhooks/ingest/paystack/",
+                "/api/v1/webhooks/ingest/demo/",
                 data=body,
                 content_type="application/json",
                 HTTP_X_WEBHOOK_SIGNATURE=signature,
             )
 
-        event = WebhookEvent.objects.get(provider="paystack")
+        event = WebhookEvent.objects.get(provider="demo")
         assert event.event_type == "payment.success"
         assert event.status == WebhookEvent.Status.RECEIVED
 
@@ -90,9 +99,9 @@ class TestWebhookIngest:
         body = json.dumps(webhook_payload).encode()
         signature = compute_signature(body)
 
-        with patch("txcore.apps.webhooks.views.publish", return_value=True):
+        with patch("txcore.apps.webhooks.views.enqueue", return_value=True):
             client.post(
-                "/api/v1/webhooks/ingest/stripe/",
+                "/api/v1/webhooks/ingest/demo/",
                 data=body,
                 content_type="application/json",
                 HTTP_X_WEBHOOK_SIGNATURE=signature,

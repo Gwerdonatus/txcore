@@ -1,14 +1,16 @@
 import logging
 import uuid
+import hashlib
+import json
+from django.db import transaction as db_transaction
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 
-from txcore.core.idempotency import get_cached_response, cache_response
 from txcore.core.schema import TransactionListResponse
 from txcore.core.metrics import TRANSACTIONS_CREATED, TRANSACTION_AMOUNT
-from txcore.events.kafka_producer import publish
+from txcore.events.outbox import enqueue
 from .models import Transaction
 from .serializers import TransactionCreateSerializer, TransactionResponseSerializer
 
@@ -23,7 +25,8 @@ class TransactionCreateView(APIView):
     """
 
     @extend_schema(
-        tags=["Transactions"], operation_id="create_transaction",
+        tags=["Transactions"],
+        operation_id="create_transaction",
         request=TransactionCreateSerializer,
         responses={201: TransactionResponseSerializer, 200: TransactionResponseSerializer},
         parameters=[
@@ -43,12 +46,6 @@ class TransactionCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Check idempotency cache — return early if seen before
-        cached = get_cached_response(idempotency_key)
-        if cached:
-            logger.info("Idempotent replay for key: %s", idempotency_key)
-            return Response(cached, status=status.HTTP_200_OK)
-
         serializer = TransactionCreateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(
@@ -56,55 +53,65 @@ class TransactionCreateView(APIView):
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
+        if len(idempotency_key) > 128:
+            return Response(
+                {"error": {"detail": "Idempotency-Key must be at most 128 characters."}}, status=400
+            )
         data = serializer.validated_data
+        canonical = {
+            **data,
+            "amount": str(data["amount"].normalize()),
+            "currency": data.get("currency", "USD"),
+            "description": data.get("description", ""),
+            "provider": data.get("provider", "demo"),
+            "metadata": data.get("metadata", {}),
+        }
+        fingerprint = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
+        scoped_key = hashlib.sha256(f"{request.user.pk}:{idempotency_key}".encode()).hexdigest()
         reference = f"TXN-{uuid.uuid4().hex[:12].upper()}"
 
-        transaction, created = Transaction.objects.get_or_create(
-            idempotency_key=idempotency_key,
-            defaults={
-                "reference": reference,
-                "amount": data["amount"],
-                "currency": data.get("currency", Transaction.Currency.USD),
-                "description": data.get("description", ""),
-                "metadata": data.get("metadata", {}),
-                "provider": data.get("provider", ""),
-                "status": Transaction.Status.PENDING,
-            },
-        )
-        if not created:
-            return Response(TransactionResponseSerializer(transaction).data, status=status.HTTP_200_OK)
+        with db_transaction.atomic():
+            transaction, created = Transaction.objects.get_or_create(
+                idempotency_key=scoped_key,
+                defaults={
+                    "reference": reference,
+                    "amount": data["amount"],
+                    "currency": canonical["currency"],
+                    "description": canonical["description"],
+                    "metadata": canonical["metadata"],
+                    "provider": canonical["provider"],
+                    "request_fingerprint": fingerprint,
+                    "status": Transaction.Status.PENDING,
+                },
+            )
+            if not created:
+                if transaction.request_fingerprint != fingerprint:
+                    return Response(
+                        {"error": {"detail": "Idempotency-Key was used with another request body."}},
+                        status=409,
+                    )
+                return Response(TransactionResponseSerializer(transaction).data, status=200)
+            enqueue(
+                "transactions",
+                transaction.id,
+                "payment_created",
+                {
+                    "transaction_id": str(transaction.id),
+                    "reference": transaction.reference,
+                    "amount": str(transaction.amount),
+                    "currency": transaction.currency,
+                    "status": transaction.status,
+                },
+            )
 
         # Prometheus metrics
         TRANSACTIONS_CREATED.labels(
             currency=transaction.currency,
             status=transaction.status,
         ).inc()
-        TRANSACTION_AMOUNT.labels(currency=transaction.currency).observe(
-            float(transaction.amount)
-        )
-
-        # Publish event to Kafka
-        publish(
-            "transactions",
-            key=str(transaction.id),
-            payload={
-                "event": "payment_created",
-                "transaction_id": str(transaction.id),
-                "reference": transaction.reference,
-                "amount": str(transaction.amount),
-                "currency": transaction.currency,
-                "status": transaction.status,
-            },
-        )
+        TRANSACTION_AMOUNT.labels(currency=transaction.currency).observe(float(transaction.amount))
 
         response_data = TransactionResponseSerializer(transaction).data
-        # Store as plain dict for JSON serialisation in cache
-        response_dict = dict(response_data)
-        response_dict["id"] = str(response_dict["id"])
-        response_dict["created_at"] = str(response_dict["created_at"])
-        response_dict["updated_at"] = str(response_dict["updated_at"])
-
-        cache_response(idempotency_key, response_dict)
 
         logger.info("Transaction created: %s", transaction.reference)
         return Response(response_data, status=status.HTTP_201_CREATED)
@@ -114,7 +121,9 @@ class TransactionDetailView(APIView):
     """GET /api/v1/transactions/<reference>/"""
 
     @extend_schema(
-        tags=["Transactions"], operation_id="get_transaction", responses={200: TransactionResponseSerializer},
+        tags=["Transactions"],
+        operation_id="get_transaction",
+        responses={200: TransactionResponseSerializer},
     )
     def get(self, request, reference):
         try:
@@ -132,7 +141,9 @@ class TransactionListView(APIView):
     """GET /api/v1/transactions/?status=pending&currency=USD"""
 
     @extend_schema(
-        tags=["Transactions"], operation_id="list_transactions", responses={200: TransactionListResponse},
+        tags=["Transactions"],
+        operation_id="list_transactions",
+        responses={200: TransactionListResponse},
     )
     def get(self, request):
         queryset = Transaction.objects.all().select_related()

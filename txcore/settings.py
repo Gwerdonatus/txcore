@@ -5,7 +5,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SECRET_KEY = config("SECRET_KEY", default="dev-secret-key-change-in-production")
 DEBUG = config("DEBUG", default=True, cast=bool)
-ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="*").split(",")
+ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="localhost,127.0.0.1,web").split(",")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -15,6 +15,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "rest_framework.authtoken",
     "django_prometheus",
     "drf_spectacular",
     "txcore.apps.transactions",
@@ -105,10 +106,11 @@ WEBHOOK_SECRET = config("WEBHOOK_SECRET", default="dev-webhook-secret")
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.TokenAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.AllowAny",
+        "rest_framework.permissions.IsAdminUser",
     ],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_THROTTLE_CLASSES": [
@@ -165,3 +167,23 @@ LOGGING = {
         },
     },
 }
+
+# Sandbox only. Missing credentials fail closed; live keys are never accepted.
+STRIPE_SECRET_KEY = config("STRIPE_SECRET_KEY", default="")
+STRIPE_WEBHOOK_SECRET = config("STRIPE_WEBHOOK_SECRET", default="")
+CHECKOUT_RETURN_URL = config("CHECKOUT_RETURN_URL", default="http://localhost:8100/payments/return/")
+MAX_RECONCILIATION_BYTES = 2 * 1024 * 1024
+MAX_RECONCILIATION_ROWS = 10000
+DATA_UPLOAD_MAX_MEMORY_SIZE = 3 * 1024 * 1024
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_IMPORTS += ("txcore.workers.delivery", "txcore.workers.webhooks")
+CELERY_BEAT_SCHEDULE = {
+    "retry-outbox": {"task": "workers.deliver_outbox", "schedule": 5.0},
+    "process-provider-webhooks": {"task": "workers.process_webhooks", "schedule": 5.0},
+    "recover-provider-payments": {"task": "workers.recover_provider_payments", "schedule": 60.0},
+    "check-sla": {"task": "workers.check_sla_breaches", "schedule": 300.0},
+}
+
+LOGIN_REDIRECT_URL = "/"
+LOGIN_URL = "/login/"

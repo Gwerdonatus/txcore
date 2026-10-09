@@ -15,6 +15,9 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -69,6 +72,8 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - SECRET_KEY=local-dev-secret-change-me
       - WEBHOOK_SECRET=local-webhook-secret
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
     depends_on:
       db:
         condition: service_healthy
@@ -96,6 +101,8 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - SECRET_KEY=local-dev-secret-change-me
       - WEBHOOK_SECRET=local-webhook-secret
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
     depends_on:
       db:
         condition: service_healthy
@@ -103,6 +110,36 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
+
+  beat:
+    build: .
+    command: celery -A txcore beat --loglevel=info --schedule=/tmp/txcore-beat
+    environment:
+      - DEBUG=True
+      - DB_HOST=db
+      - DB_NAME=txcore
+      - DB_USER=txcore
+      - DB_PASSWORD=txcore
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=local-dev-secret-change-me
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    depends_on:
+      web:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  stripe-listener:
+    image: stripe/stripe-cli@sha256:11c46caeead82e329f14823dd622d494b4cc8c1b9766f724d122d2af42c97540
+    profiles: [stripe]
+    command: listen --forward-to http://web:8000/api/v1/webhooks/ingest/stripe/ --events checkout.session.completed,checkout.session.expired,checkout.session.async_payment_succeeded,checkout.session.async_payment_failed
+    environment:
+      STRIPE_API_KEY: ${STRIPE_SECRET_KEY:-}
+    depends_on:
+      web:
+        condition: service_healthy
 
   prometheus:
     image: prom/prometheus:v2.52.0
@@ -122,10 +159,12 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
 
 volumes:
   postgres_data:
+  redis_data:
   grafana_data:

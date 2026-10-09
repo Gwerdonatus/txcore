@@ -10,6 +10,8 @@ class WebhookEvent(models.Model):
         FAILED = "failed", "Failed"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    provider_event_id = models.CharField(max_length=255, null=True, blank=True)
+    next_attempt_at = models.DateTimeField(null=True, blank=True)
     provider = models.CharField(max_length=50, db_index=True)
     event_type = models.CharField(max_length=100, db_index=True)
     payload = models.JSONField()
@@ -28,6 +30,9 @@ class WebhookEvent(models.Model):
 
     class Meta:
         ordering = ["-received_at"]
+        constraints = [models.UniqueConstraint(
+            fields=["provider", "provider_event_id"], name="unique_provider_event",
+        )]
         indexes = [
             models.Index(fields=["provider", "event_type", "status"]),
         ]

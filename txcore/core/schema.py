@@ -55,6 +55,8 @@ class DiscrepancyDetail(serializers.Serializer):
     type = serializers.CharField()
     expected_amount = serializers.CharField(allow_null=True)
     actual_amount = serializers.CharField(allow_null=True)
+    expected_currency = serializers.CharField()
+    actual_currency = serializers.CharField()
     expected_status = serializers.CharField()
     actual_status = serializers.CharField()
     notes = serializers.CharField()
