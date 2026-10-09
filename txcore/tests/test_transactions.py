@@ -66,7 +66,9 @@ class TestTransactionCreate:
         # Only one DB record should exist
         assert Transaction.objects.filter(idempotency_key=idempotency_key).count() == 1
 
-    def test_retry_after_cache_eviction_returns_existing_transaction(self, client, idempotency_key, valid_payload):
+    def test_retry_after_cache_eviction_returns_existing_transaction(
+        self, client, idempotency_key, valid_payload,
+    ):
         with patch("txcore.apps.transactions.views.publish", return_value=True) as publish:
             first = client.post(
                 "/api/v1/transactions/create/", data=valid_payload, format="json",

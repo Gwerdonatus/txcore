@@ -21,6 +21,7 @@ class WebhookIngestView(APIView):
     """
 
     @extend_schema(
+        tags=["Webhooks"],
         request=WebhookPayload,
         responses={202: WebhookAccepted},
         parameters=[OpenApiParameter(
@@ -88,7 +89,7 @@ class WebhookIngestView(APIView):
 class WebhookEventListView(APIView):
     """GET /api/v1/webhooks/?provider=stripe&status=received"""
 
-    @extend_schema(responses={200: WebhookListResponse})
+    @extend_schema(tags=["Webhooks"], responses={200: WebhookListResponse})
     def get(self, request):
         queryset = WebhookEvent.objects.all()
 

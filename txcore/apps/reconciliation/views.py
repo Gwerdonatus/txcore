@@ -21,7 +21,9 @@ class ReconciliationUploadView(APIView):
     """
     parser_classes = [MultiPartParser]
 
-    @extend_schema(request=ReconciliationUpload, responses={201: ReconciliationSummary})
+    @extend_schema(
+        tags=["Reconciliation"], request=ReconciliationUpload, responses={201: ReconciliationSummary},
+    )
     def post(self, request):
         csv_file = request.FILES.get("file")
         if not csv_file:
@@ -65,7 +67,9 @@ class ReconciliationUploadView(APIView):
 class ReconciliationRunDetailView(APIView):
     """GET /api/v1/reconciliation/<run_id>/"""
 
-    @extend_schema(responses={200: ReconciliationDetail})
+    @extend_schema(
+        tags=["Reconciliation"], operation_id="get_reconciliation", responses={200: ReconciliationDetail},
+    )
     def get(self, request, run_id):
         try:
             run = ReconciliationRun.objects.get(id=run_id)
@@ -104,7 +108,10 @@ class ReconciliationRunDetailView(APIView):
 class ReconciliationRunListView(APIView):
     """GET /api/v1/reconciliation/"""
 
-    @extend_schema(responses={200: ReconciliationListResponse})
+    @extend_schema(
+        tags=["Reconciliation"], operation_id="list_reconciliation",
+        responses={200: ReconciliationListResponse},
+    )
     def get(self, request):
         runs = ReconciliationRun.objects.all()[:20]
         data = [

@@ -17,12 +17,13 @@ logger = logging.getLogger(__name__)
 
 class TransactionCreateView(APIView):
     """
-    POST /api/v1/transactions/
+    POST /api/v1/transactions/create/
     Creates a payment transaction with idempotency guarantees.
     Requires Idempotency-Key header.
     """
 
     @extend_schema(
+        tags=["Transactions"], operation_id="create_transaction",
         request=TransactionCreateSerializer,
         responses={201: TransactionResponseSerializer, 200: TransactionResponseSerializer},
         parameters=[
@@ -112,7 +113,9 @@ class TransactionCreateView(APIView):
 class TransactionDetailView(APIView):
     """GET /api/v1/transactions/<reference>/"""
 
-    @extend_schema(responses={200: TransactionResponseSerializer})
+    @extend_schema(
+        tags=["Transactions"], operation_id="get_transaction", responses={200: TransactionResponseSerializer},
+    )
     def get(self, request, reference):
         try:
             transaction = Transaction.objects.get(reference=reference)
@@ -128,7 +131,9 @@ class TransactionDetailView(APIView):
 class TransactionListView(APIView):
     """GET /api/v1/transactions/?status=pending&currency=USD"""
 
-    @extend_schema(responses={200: TransactionListResponse})
+    @extend_schema(
+        tags=["Transactions"], operation_id="list_transactions", responses={200: TransactionListResponse},
+    )
     def get(self, request):
         queryset = Transaction.objects.all().select_related()
 
