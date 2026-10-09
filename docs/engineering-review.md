@@ -1,41 +1,39 @@
-# Engineering review
+# Engineering decisions and boundaries
 
-Reviewed the application, worker modules, schema, Compose setup, test configuration and CI workflow on 9 October 2026.
+TxCore is a single-workspace Stripe payment operations sandbox. Its core concern is preserving meaning across retries, provider notifications and conflicting statements.
 
-## Positioning
+## Database-first intake
 
-TxCore is a backend prototype with a useful combination of retry handling, webhook verification and reconciliation. It is appropriate to discuss as a solo engineering case study. The source does not support the previous README's claims of production-grade operation, measured high throughput or Kafka-driven settlement. The rewritten README presents concrete behavior and distinguishes the implemented paths from future architecture.
+A unique SHA-256 key scopes the caller's idempotency key to their account. A fingerprint covers validated defaults, normalized decimal amount, currency, description, provider and metadata. An identical retry returns current state; a changed body returns 409. PostgreSQL's uniqueness resolves concurrent intake. A transaction and its creation outbox event commit together. Older records are preserved by additive migrations; the new scoped key contract does not retroactively re-key old prototype records.
 
-## Changes made during the walkthrough
+Checkout initialization locks one transaction. Stripe receives `checkout-v1-{transaction UUID}`, and TxCore stores the returned session and URL. Retrying after provider success but before local commit can recover the same session through Stripe's idempotency behavior. This is not an unlimited guarantee: provider idempotency retention is finite. A production design would track ambiguous requests and investigate before creating a replacement session.
 
-| Finding | Change |
-|---|---|
-| Local ports collided with Sentinel | Loopback-only, configurable API/Kafka/monitoring ports; private PostgreSQL/Redis ports |
-| Fresh API containers lacked migrated tables and mounted static assets | Run migrations and static collection before Gunicorn; verify the schema endpoint for readiness |
-| Worker modules were outside Celery's default `tasks.py` discovery | Explicitly register the settlement and SLA modules |
-| Expired Redis entries made a repeated unique transaction key raise a database error | Use database `get_or_create` as the durable fallback; add a cache-eviction retry regression |
-| OpenAPI omitted webhook headers and CSV upload/response shapes | Describe the actual existing API contracts with serializers and annotations |
-| Random seed data did not prove an ingestion workflow | Add an asserted local HTTP demonstration and a separate explicit Celery dispatch demonstration |
-| Kafka 2.0.2 failed to import on the Python 3.12 runtime | Pin 2.0.6; verify an actual acknowledged broker send and add a CI import check |
-| Coverage included test files and delivery paths lacked regressions | Exclude test and migration files; add producer acknowledgement, failure and worker execution tests |
-| Documentation described features not present | Correct the architecture, provider signature description, test environment and operational claims |
+## Payment evidence
 
-## Design tradeoffs to explain in an interview
+A browser redirect is a navigation event, not payment evidence. The Stripe SDK verifies timestamped signatures over raw bytes with a 300-second tolerance. Live keys, live sessions and live webhook events are rejected. Events deduplicate by provider event ID. Processing retrieves current Stripe state and compares the stored provider session, client reference, amount and currency before applying `settled`.
 
-**Idempotency.** Redis reduces the cost of sequential retries; the database unique key controls record duplication. The fallback prevents a cache miss from creating a second record or raising a uniqueness error. The same key with different bodies is not rejected using a fingerprint, and there is no tenant/caller scope. Recovering the record does not establish exactly-once event publication.
+Receipts persist before 202, independently of Redis or task dispatch. Beat polls for work. Provider failures retry with backoff; after five attempts the receipt is marked failed for review. A separate 60-second scanner checks processing Stripe payments to recover missed webhooks. Its batch is 20 records; a large pending backlog needs fair scheduling and pagination before scale. No fake receipt is created by recovery.
 
-**Kafka.** The producer waits for acknowledgement and reports failure, but views do not turn that failure into a durable retry intent. There is no outbox or consumer. The project currently demonstrates publication, not an event-driven settlement pipeline. Adding Kafka is not justified by a measured throughput requirement; simpler direct task dispatch would be appropriate for a smaller deployment.
+`settled` means Stripe reports a paid, complete test Checkout session. It does not mean a bank payout settled. Local HMAC demo events are DEBUG-only and cannot settle Stripe transactions. The explicit simulation settlement task also refuses Stripe records.
 
-**Settlement.** The worker moves a synthetic record from pending to processing to settled. It does not call a provider. Its retry behavior after a failure in processing needs a recoverable state machine and provider idempotency before real use. The demo queues the task explicitly; webhook acceptance is not wired to it.
+## Why the outbox and Kafka coexist
 
-**Reconciliation.** The engine batch-fetches referenced transactions and batch-inserts discrepancies, reducing per-row database queries. It flags the first applicable discrepancy for each row. Currency comparison, duplicate-row handling, bounded uploads, durable job scheduling and streaming larger files remain work. The demonstration deliberately uses USD for all statement rows.
+The outbox solves the database/event dual-write gap. The relay marks delivery only after Kafka acknowledges it, retaining failed attempts and applying backoff. If Kafka accepts an event and the database commit fails, the event may be published again. Stable event IDs make downstream deduplication possible; exactly-once delivery is not claimed.
 
-**Webhook security.** Constant-time comparison validates a generic shared-secret HMAC over raw bytes. Provider names are labels; this is not Stripe's timestamped signing format. Replay/freshness enforcement and per-provider secrets are absent. Accepted reports remain stored as received; there is no processing consumer.
+Kafka is an integration stream for independently operated consumers. There is no consumer in this repository and no claim that Kafka drives settlement. For a smaller system, PostgreSQL outbox plus Celery alone is simpler. Kafka's inclusion is a deliberate event-delivery exercise, not a demonstrated performance requirement.
 
-**Observability.** Prometheus can scrape API request and application metrics. Counters modified in a separate Celery process are not exported by the API automatically. Compose uses one Gunicorn process for coherent demonstration counters; this is not evidence of scale. Grafana starts, but no application dashboard is provisioned. The Nginx configuration is not included as a Compose service.
+## Statement interpretation
 
-## Verification interpretation
+CSV processing is synchronous and bounded to 2 MiB and 10,000 rows. One reference lookup avoids per-row database queries; discrepancies are inserted in a batch with the completed counts. Required columns are reference, amount and currency; status is optional. Invalid rows are counted as skipped. Valid duplicate references, missing records, currency differences, amount differences and status differences are recorded.
 
-Tests run with `txcore.test_settings`: SQLite in memory and a local-memory cache. CI starts PostgreSQL and runs migrations there, but pytest's database remains SQLite. Kafka calls in API tests are mocked. Actual local HTTP outcomes, Redis cache behavior, worker execution, Kafka acknowledgements and PostgreSQL persistence therefore require separate runtime checks. Those results are recorded in [verification.md](verification.md).
+Each valid row produces the first applicable discrepancy, rather than multiple overlapping flags. Currency comparison precedes amount comparison. Decimal amount tolerance is 0.01 inclusive across supported currencies; that is a simple project policy, not a provider-specific settlement convention. Synthetic statements demonstrate comparison behavior; they are not automatic imports from Stripe.
 
-The Locust script and a CI badge are useful tooling, not measured performance or assurance of secure deployment. The local APIs use `AllowAny`; host access is loopback-only in this demonstration.
+## Access and operations
+
+Staff users share the workspace. Token authentication serves API clients; session writes enforce CSRF. Demo setup is restricted to DEBUG and preserves passwords. The demo account has read-only administrative model permissions, while workspace APIs allow the authorized workflow. There are no tenant boundaries or granular payment roles.
+
+Database-backed metrics aggregate state written by worker processes. Process-local counters are still process-local; one API worker simplifies local demonstration, but does not solve distributed histogram aggregation. Grafana is provisioned against the Compose Prometheus datasource.
+
+Production work would require live payment lifecycle design, a ledger, tenant boundaries, role separation, secret rotation, TLS, dependency review, deployment access controls, manual exception handling, migrations/backup drills and high-availability infrastructure. None is implied by a passing sandbox demo.
+
+Primary references: [Stripe webhooks](https://docs.stripe.com/webhooks), [Checkout Sessions](https://docs.stripe.com/api/checkout/sessions/create?lang=python), [dynamic payment methods](https://docs.stripe.com/payments/payment-methods/dynamic-payment-methods), [Stripe Python SDK](https://github.com/stripe/stripe-python).

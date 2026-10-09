@@ -1,159 +1,156 @@
 # TxCore
 
-A payment-processing backend prototype focused on retry-safe transaction intake, signed webhook reporting and explainable CSV reconciliation.
+A payment operations sandbox built by **Donatus Gwer**: retry-safe payment intake, Stripe-hosted Checkout, verified provider events and explainable statement reconciliation.
 
 [![CI](https://github.com/Gwerdonatus/txcore/actions/workflows/ci.yml/badge.svg?branch=docs%2Frecruiter-walkthrough)](https://github.com/Gwerdonatus/txcore/actions)
 
-When a client times out, it may retry an order that already exists. Later, a provider report may disagree with the local amount or settlement status. TxCore explores those two problems: keeping transaction intake stable across retries and making reconciliation differences inspectable.
+A checkout request can time out after a payment record already exists. A webhook can arrive twice, arrive late or never arrive. A statement can disagree with the local record. TxCore makes those failures visible and recoverable rather than assuming that a successful browser redirect means a successful payment.
 
-I built this as a solo backend engineering project. It stores synthetic payment records and simulates settlement; it does not charge cards, move money or call a live payment provider. The interfaces below are the actual OpenAPI documentation and Django REST Framework browsable API, rather than a separate customer dashboard.
+This is a solo backend engineering project with a small authenticated operations workspace. Stripe integration uses **test mode only**. Local simulations are labelled separately. No real funds move, and `settled` means a verified paid Checkout session, not completed bank payout settlement.
 
-## Walk through the running API
+## See the actual workflow
 
-Screenshots use local synthetic data. Provider names and statuses are labels in a prototype, not evidence of a live integration or completed bank settlement.
+### 1. Sign in and inspect payment operations
 
-### 1. Inspect the integration contract
+The workspace brings transaction states, undelivered events, provider reports and statement results together. Staff accounts use session authentication; API clients use tokens. Session writes enforce CSRF protection.
 
-The schema describes transaction requests, the required idempotency header, generic webhook signatures and multipart CSV uploads.
+![Actual TxCore sandbox workspace](docs/screenshots/workspace.jpg)
 
-![Live TxCore OpenAPI documentation](docs/screenshots/api-docs.jpg)
+### 2. Create a payment and use Stripe Checkout
 
-### 2. Create once, retry safely
+The first request creates one transaction and its durable outbox event in the same database transaction. Retrying the same caller's key and body returns that record; reusing the key with another body returns **409**. Concurrent Checkout requests serialize around the transaction and reuse a stable Stripe idempotency key.
 
-A request supplies an `Idempotency-Key`. Its first creation returns **201**; a sequential retry returns **200** and the same transaction ID. Redis caches the creation response, while the database's unique key and `get_or_create` also recover an existing record after cache eviction. The regression test checks that recovery without publishing another creation event.
+![Actual Stripe sandbox Checkout using public test payment details](docs/screenshots/stripe-checkout.jpg)
 
-![Synthetic transaction details in the browsable API](docs/screenshots/transaction-detail.jpg)
+### 3. Verify provider state before marking payment paid
 
-### 3. Authenticate a reported webhook
+Stripe's timestamped signature is checked against the exact webhook bytes. Identified test events are stored once, acknowledged with **202**, then processed by a scheduled worker. The worker retrieves the current Checkout session and checks its reference, amount, currency, test-mode flag and payment state. A periodic scan can recover a paid session when webhook delivery was missed.
 
-A generic HMAC-SHA256 signature covers the exact request bytes. A valid signed report returns **202** and is stored; an invalid signature returns **401**. Acceptance does not automatically settle the transaction or establish that a real provider performed the action.
+![Verified Stripe sandbox transaction](docs/screenshots/transaction-detail.jpg)
 
-![Accepted synthetic webhook report](docs/screenshots/webhooks.jpg)
+### 4. Inspect statement differences
 
-### 4. Reconcile a statement against local records
+A bounded CSV upload compares references, currencies, decimal amounts and optional statuses. Missing records, repeated references and mismatches produce inspectable evidence. The screenshot uses a deliberately altered **synthetic statement**, not a downloaded Stripe settlement statement.
 
-The demonstration uploads four CSV rows: one matches; the other three expose an amount mismatch, a status mismatch and a missing transaction. The response links each discrepancy to its reference and expected/actual values.
-
-![Actual reconciliation result with three discrepancy types](docs/screenshots/reconciliation-detail.jpg)
+![Actual reconciliation evidence](docs/screenshots/reconciliation-detail.jpg)
 
 <details>
-<summary>More screens: transaction list, reconciliation history and monitoring</summary>
+<summary>API contract, provider reports and monitoring</summary>
 
-![Transaction list filtered to the simulated EUR settlement](docs/screenshots/transactions.jpg)
+![Live API documentation](docs/screenshots/api-docs.jpg)
 
-![Completed reconciliation runs](docs/screenshots/reconciliation-runs.jpg)
+![Stored provider reports](docs/screenshots/webhooks.jpg)
 
-![Prometheus scraping the running API](docs/screenshots/prometheus.jpg)
+![Database-backed payment monitoring in Grafana](docs/screenshots/grafana.jpg)
+
+![Prometheus scraping TxCore](docs/screenshots/prometheus.jpg)
 
 </details>
 
-See [screenshot provenance](docs/screenshots/README.md), [the engineering review](docs/engineering-review.md) and [the repeatable demonstration](docs/local-demo.md).
+[Screenshot provenance](docs/screenshots/README.md) · [Engineering decisions](docs/engineering-review.md) · [Repeatable walkthrough](docs/local-demo.md) · [Measured verification](docs/verification.md)
 
 ## Implemented behavior
 
-| Area | Implementation |
+| Area | What it does |
 |---|---|
-| Transaction intake | Positive decimal amounts, supported currencies, unique idempotency keys and reference lookups |
-| Retry handling | Cached replay plus database fallback after eviction; one database record per key |
-| Webhook ingestion | Constant-time generic HMAC comparison, stored payloads and validation-failure metrics |
-| Reconciliation | Reference lookup, 0.01 amount tolerance, optional status comparison, missing-record discrepancies and skipped invalid rows |
-| Query efficiency | One reference batch lookup and batched discrepancy insertion |
-| Async work | Explicitly dispatched Celery simulated-settlement task; task registration verified |
-| Event publishing | Acknowledged Kafka sends with producer retries; failure logged and returned internally |
-| Operations | Compose, API metrics, Prometheus scrape configuration and CI tests/lint |
+| Authentication | Staff workspace, session/CSRF protection and token-authenticated APIs |
+| Idempotency | Caller-scoped database keys, normalized request fingerprints and conflicting-body rejection |
+| Stripe sandbox | Hosted Checkout, stable provider keys, exact minor-unit validation and live-key rejection |
+| Provider verification | Timestamped raw-byte signatures, duplicate-event protection and current-session validation |
+| Recovery | Durable webhook retries and a scheduled scan for missed provider notifications |
+| Event delivery | Transactional outbox, Kafka acknowledgements, backoff and stable event IDs |
+| Reconciliation | Currency/amount/status differences, duplicate and missing references, explicit skipped rows |
+| Operations | Celery worker/Beat, database-backed Prometheus gauges and provisioned Grafana dashboard |
 
-## Actual execution paths
+## Execution path
 
 ```mermaid
 flowchart LR
-    Client[Client: idempotency key] --> API[DRF transaction API]
-    API --> Cache[Redis: cached replay]
-    API --> DB[PostgreSQL: unique transaction key]
-    API --> Kafka[Kafka: creation event publication]
-    Demo[Explicit demo task dispatch] --> Queue[Redis Celery broker]
-    Queue --> Worker[Simulated settlement worker]
-    Worker --> DB
-    Worker --> Kafka
-    Signed[Generic signed webhook] --> Webhook[Validate and persist report]
-    Webhook --> DB
-    Webhook --> Kafka
-    CSV[Uploaded CSV] --> Recon[Synchronous reconciliation]
+    Staff[Staff workspace / authenticated API] --> DB[PostgreSQL: transaction + outbox]
+    Staff --> Checkout[Stripe test Checkout]
+    Checkout --> Receipt[Signed webhook: validate + persist]
+    Receipt --> DB
+    Beat[Celery Beat] --> Worker[Celery worker]
+    Worker --> Verify[Retrieve current Stripe session]
+    Verify --> DB
+    Worker --> Relay[Outbox relay: acknowledged delivery]
+    Relay --> Kafka[Kafka integration events]
+    CSV[Synthetic statement upload] --> Recon[Bounded synchronous reconciliation]
     Recon --> DB
+    DB --> Metrics[Database-backed metrics]
 ```
 
-Kafka is a publication destination here. There is **no Kafka consumer connecting those topics to Celery**. The worker demonstration dispatches the task explicitly. This architecture should not be described as Kafka-driven settlement or a durable end-to-end delivery guarantee.
-
-PostgreSQL stores transactions, webhook reports and reconciliation outcomes. Redis supports caching, throttling and Celery. Prometheus scrapes the API. Grafana is available for exploration; a prebuilt application dashboard is not supplied. The Nginx file is a deployment example, not a running Compose service.
+Kafka provides a decoupled integration stream; **it does not trigger payment verification**. Celery polls the database for durable work, using Redis as its broker. A PostgreSQL outbox plus Celery would be enough for a smaller deployment; Kafka here demonstrates acknowledged event delivery to future independent consumers. No consumer or throughput advantage is claimed. Delivery is **at least once**, so consumers must deduplicate the supplied event ID.
 
 ## Run locally
 
-The walkthrough changes are on [`docs/recruiter-walkthrough`](https://github.com/Gwerdonatus/txcore/tree/docs/recruiter-walkthrough) pending review.
+The completed sandbox is on [`docs/recruiter-walkthrough`](https://github.com/Gwerdonatus/txcore/tree/docs/recruiter-walkthrough), in [PR #1](https://github.com/Gwerdonatus/txcore/pull/1) pending review.
 
 ```sh
 git clone https://github.com/Gwerdonatus/txcore.git
 cd txcore
 git switch docs/recruiter-walkthrough
 cp .env.example .env
+chmod 600 .env
 docker compose -p txcore config --quiet
 docker compose -p txcore up -d --build --wait --wait-timeout 300
+docker compose -p txcore exec web python manage.py setup_demo
 python3 scripts/demo.py
-docker compose -p txcore exec web python scripts/demo_settlement.py
 ```
 
-Compose runs migrations and collects static assets before starting the API. Default ports avoid collisions with the Sentinel demo and bind host access to loopback. Database and Redis ports are private to the Compose network.
+That starts the local simulation without external payment credentials. For actual **Stripe test Checkout**, privately set `STRIPE_SECRET_KEY` in the ignored `.env`, then follow [the Stripe setup](docs/local-demo.md#stripe-test-checkout). API migrations run automatically at startup. Host ports bind to loopback; PostgreSQL and Redis remain private. The Nginx file is a deployment example, not a Compose service.
 
 | Interface | Local URL |
 |---|---|
-| OpenAPI / Swagger | http://localhost:8100/api/docs/ |
+| Workspace | http://localhost:8100/ |
+| Login | http://localhost:8100/login/ |
+| OpenAPI | http://localhost:8100/api/docs/ |
 | Transactions | http://localhost:8100/api/v1/transactions/ |
-| Webhook reports | http://localhost:8100/api/v1/webhooks/ |
-| Reconciliation runs | http://localhost:8100/api/v1/reconciliation/ |
-| Metrics | http://localhost:8100/metrics |
+| Provider reports | http://localhost:8100/api/v1/webhooks/ |
+| Reconciliation | http://localhost:8100/api/v1/reconciliation/ |
 | Prometheus | http://localhost:9091 |
-| Grafana | http://localhost:3010 |
+| Grafana | http://localhost:3010/d/txcore-sandbox/ |
 
-No dashboard account is required: application endpoints are unauthenticated local prototype endpoints. Do not expose them publicly as a payment API. Grafana's local demonstration credentials are `admin` / `admin`.
+Local workspace: **demo.admin / TxCoreSandbox123!**. Grafana: **admin / admin**. These are development credentials; Compose is not configured for public deployment. `setup_demo` is DEBUG-only and preserves an existing password.
 
-## Verify
+## Verification
 
-The reviewed suite passes **42 tests with 92.13% application coverage**. Tests, migrations and test settings are excluded from the coverage denominator.
+**88 tests passed against PostgreSQL**, including concurrent intake and Checkout initialization. The SQLite coverage run passed **86 tests**, skipped the two PostgreSQL-specific tests, and measured **91.34% application coverage**. Provider calls are mocked in automated tests; a separate browser run completed actual Stripe test Checkout and verified fresh webhook delivery and processing.
 
 ```sh
-docker compose -p txcore run --rm --no-deps \
-  -e DJANGO_SETTINGS_MODULE=txcore.test_settings web \
-  sh -c 'python manage.py check && python manage.py makemigrations --check --dry-run && pytest --cov=txcore --cov-report=term-missing --cov-fail-under=80'
+docker compose -p txcore exec web python -m pip install flake8
+docker compose -p txcore exec web flake8 txcore/ --max-line-length=110 --exclude=migrations
+docker compose -p txcore exec web python manage.py check
+docker compose -p txcore exec web python manage.py makemigrations --check --dry-run
+docker compose -p txcore exec web python manage.py spectacular --validate --fail-on-warn --file /tmp/schema.yml
+docker compose -p txcore exec -e DJANGO_SETTINGS_MODULE=txcore.test_settings web pytest --cov=txcore --cov-report=term-missing --cov-fail-under=80
+docker compose -p txcore exec -e DJANGO_SETTINGS_MODULE=txcore.postgres_test_settings web pytest --no-cov
 ```
 
-Tests use an isolated SQLite database and in-memory cache. CI also runs migrations against a PostgreSQL service before the test suite; that does not mean the suite itself uses PostgreSQL. Kafka publishing is mocked in the API regression tests. See [verification evidence](docs/verification.md) for measured counts, coverage, HTTP outcomes and the scope of runtime checks.
+CI runs both database test configurations, schema validation and lint. No p95 latency, throughput or load-capacity claim is made.
 
-The existing workflow runs tests and flake8 on pull requests, then builds/pushes the Docker image on `main`. A Locust script exists, but no load-test throughput, p95 latency, 1,000-user capacity or production-readiness result is claimed.
+## Boundaries
 
-## Boundaries and next engineering steps
-
-- Idempotency keys are global and requests do not have a stored payload fingerprint. Caller-scoped keys and rejection of conflicting bodies are future work.
-- Database writes and Kafka publication are separate. Publication failure does not roll back intake; no transactional outbox or replay consumer is implemented.
-- Webhooks use one configured generic secret. They do not implement Stripe's timestamped signature protocol, freshness enforcement or duplicate-event protection.
-- Settlement is simulated. Webhook processing, robust settlement retry recovery and scheduled SLA execution are incomplete.
-- Reconciliation currently requires a currency column but does not compare it. It uses synchronous, in-memory CSV handling and does not detect duplicate statement rows.
-- API authentication, tenant boundaries, file-size limits and operational hardening must precede external deployment.
-- API-process metrics do not automatically include counters changed in a separate Celery worker process. Local Compose uses one Gunicorn worker for consistent demonstration metrics.
-
-These limitations are part of the engineering review, not hidden behind a production-grade label.
+- This is a **single shared staff workspace**, not a multi-tenant payments service.
+- It uses Stripe test credentials, not live charges, refunds, payouts or a double-entry ledger.
+- CSV reports are synchronous, capped at 2 MiB and 10,000 rows. They are evidence comparisons, not automated accounting adjustments or compliance certification.
+- Failed provider events remain visible for investigation; a manual retry/resolution workflow is not implemented.
+- Kafka is a single development broker. Outbox recovery prevents silent loss, but publication can be duplicated after an acknowledgement/commit crash.
+- Development secrets, DEBUG, HTTP and demo passwords must be replaced before deployment. The public schema/metrics endpoints would also need deployment-specific access controls.
+- No external deployment, dependency security audit, PCI certification or production traffic claim is made.
 
 ## Repository map
 
 | Path | Purpose |
 |---|---|
-| `txcore/apps/transactions` | Intake, retry handling, query endpoints and decimal transaction model |
-| `txcore/apps/webhooks` | Generic signature verification and stored reports |
-| `txcore/apps/reconciliation` | CSV comparison engine and discrepancy endpoints |
-| `txcore/workers` | Simulated settlement and SLA task implementations |
-| `txcore/events` | Kafka producer |
-| `txcore/tests` | Regression suite |
-| `scripts/demo.py` | Actual HTTP demonstration with assertions |
-| `scripts/demo_settlement.py` | Explicit synthetic Celery dispatch and completion check |
-| `docs` | Product screenshots, review, walkthrough and measured evidence |
+| `txcore/apps/transactions` | Intake, Checkout, records, durable outbox and workspace templates |
+| `txcore/apps/webhooks` | Provider signatures and persisted receipts |
+| `txcore/apps/reconciliation` | CSV comparison and discrepancy evidence |
+| `txcore/providers` | Stripe test SDK boundary |
+| `txcore/workers` | Scheduled verification, recovery, delivery and demo-only settlement |
+| `txcore/tests` | Regression and PostgreSQL concurrency suite |
+| `scripts` | Asserted local HTTP demos and private listener configuration |
+| `grafana` | Provisioned datasource and database-state dashboard |
+| `docs` | Actual screenshots, decisions, walkthrough and verification |
 
-**Donatus Gwer — Backend Engineer**
-
-[GitHub](https://github.com/Gwerdonatus) · [LinkedIn](https://linkedin.com/in/donatus-gwer)
+**Donatus Gwer — Backend Engineer** · [GitHub](https://github.com/Gwerdonatus) · [LinkedIn](https://linkedin.com/in/donatus-gwer)

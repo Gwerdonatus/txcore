@@ -1,23 +1,20 @@
 # Screenshot provenance
 
-Captured from the actual local TxCore prototype on 9 October 2026. These are unaltered browser screenshots of Swagger/OpenAPI, Django REST Framework's browsable API and Prometheus. No product dashboard, transaction or performance figure was generated for the images.
+Captured from the actual running TxCore application on **9 October 2026**. Images show its authenticated Django workspace, DRF browsable API, OpenAPI, Stripe-hosted **Sandbox** Checkout, Prometheus and Grafana. No UI, status or metric was generated for these pictures.
 
-## Scenario
+Stripe Checkout uses public test card details and a synthetic buyer. Local simulations are separate and explicitly labelled. `settled` on a Stripe record means a verified paid test Checkout session, not bank payout settlement. Historical local records were preserved rather than deleted to stage a cleaner screenshot.
 
-The asserted HTTP demo uses three synthetic USD transactions (250, 120 and 80), fixed retry keys, a generic signed webhook and a four-row CSV statement. The statement produces one match and three discrepancies: amount mismatch, status mismatch and missing transaction.
-
-A separate EUR record is settled by an explicitly dispatched Celery task. That task changes local database state without contacting a provider. All transaction metadata marks the data as synthetic and states that no external action was performed.
-
-The demo is not affiliated with any payment provider. The `demo` provider name is a local label. Webhook acceptance remains `received`; it is not proof of payment or automatic settlement. Idempotency assertions and HTTP status checks are in [scripts/demo.py](../../scripts/demo.py), not inferred from screenshots.
-
-| Screenshot | What it shows |
+| Image | Actual screen |
 |---|---|
-| [API documentation](api-docs.jpg) | The live OpenAPI contract |
-| [Transaction detail](transaction-detail.jpg) | Actual stored synthetic transaction fields |
-| [Transactions](transactions.jpg) | Transaction list filtered to the simulated EUR settlement |
-| [Webhook reports](webhooks.jpg) | Persisted accepted generic signed report |
-| [Reconciliation detail](reconciliation-detail.jpg) | Actual expected/actual differences and missing reference |
-| [Reconciliation history](reconciliation-runs.jpg) | Completed four-row CSV runs |
-| [Prometheus](prometheus.jpg) | Successful scrape of the running API |
+| [Workspace](workspace.jpg) | Local authenticated payment operations |
+| [Stripe Checkout](stripe-checkout.jpg) | USD 3.00 hosted sandbox form before submission |
+| [Transaction detail](transaction-detail.jpg) | Verified USD 3.00 Stripe test payment |
+| [API docs](api-docs.jpg) | Live integration schema |
+| [Provider reports](webhooks.jpg) | Processed actual Stripe notifications |
+| [Transactions](transactions.jpg) | Stored Stripe test records |
+| [Reconciliation detail](reconciliation-detail.jpg) | Six-row staged statement with five deliberate differences |
+| [Reconciliation history](reconciliation-runs.jpg) | Actual completed comparison runs |
+| [Prometheus](prometheus.jpg) | API target successfully scraped |
+| [Grafana](grafana.jpg) | Provisioned database-backed monitoring |
 
-Measurements and caveats are in [verification.md](../verification.md). See [local-demo.md](../local-demo.md) to reproduce the HTTP workflow. Screenshots are snapshots, not production usage or load-test evidence.
+Assertions and measured results are in [verification.md](../verification.md). Reproduce the flows using [local-demo.md](../local-demo.md). No API secret, signing secret or authentication token is included in the published screenshots.
